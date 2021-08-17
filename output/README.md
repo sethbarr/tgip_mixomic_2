@@ -1,3 +1,3 @@
 # Output
 
-Save processed data files here.
+Saved files go here. Not all are necessary, but might be informative along the way. 

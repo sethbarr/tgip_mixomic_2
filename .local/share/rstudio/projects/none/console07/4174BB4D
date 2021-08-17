@@ -1,0 +1,18 @@
+]0;/home/rstudiorstudio@1759f3ef143d:~$ [Krstudio@1759f3ef143d:~$ ls
+analysis    tgip_mixomic.Rproj
+code	    tgipmixomics12082021.docker.yml
+data	    tgipMixomics_12082021.docker.yml
+Dockerfile  tgipmixomics12082021.rmd
+docs	    tgipMixomics_spcfiedCorr_allComps_200721.Rmd
+output	    tgipMixomics_spcfiedCorr_allComps_conflictedMaybe.Rmd
+README.md   _workflowr.yml
+]0;/home/rstudiorstudio@1759f3ef143d:~$ r[Krstudio@1759f3ef143d:~$ r[Kls
+analysis	   tgip_mixomic.Rproj
+code		   tgipmixomics12082021.docker.yml
+data		   tgipMixomics_12082021.docker.yml
+Dockerfile	   tgipmixomics12082021.rmd
+docs		   tgipMixomics_spcfiedCorr_allComps_200721.Rmd
+GettingRunning.md  tgipMixomics_spcfiedCorr_allComps_conflictedMaybe.Rmd
+output		   _workflowr.yml
+README.md
+]0;/home/rstudiorstudio@1759f3ef143d:~$ 

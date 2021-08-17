@@ -1,0 +1,18 @@
+container_name: liftr_container_2275e7f7_543a_40f3_8c55_0d096f74c368
+image_name: tgipMixomics_12082021
+docker_build_cmd: docker build --no-cache=false --rm=true  -t="tgipMixomics_12082021"
+  C:/Users/Seth/Desktop/tgip_mixomic
+docker_run_cmd: docker run --rm  --name "liftr_container_2275e7f7_543a_40f3_8c55_0d096f74c368"
+  -u `id -u $USER` -v "C:/Users/Seth/Desktop/tgip_mixomic:/liftrroot/"
+  tgipMixomics_12082021 Rscript -e "library('knitr');library('rmarkdown');library('shiny');setwd('/liftrroot/');render(input
+  = 'tgipMixomics_12082021.Rmd')"
+
+# container_name: liftr_container_2275e7f7_543a_40f3_8c55_0d096f74c368
+# image_name: tgipMixomics_12082021
+# docker_build_cmd: docker build --no-cache=false --rm=true  -t="tgipMixomics_12082021"
+#   C:/Users/Seth/Desktop/tgip_mixomic
+# docker_run_cmd: docker run --rm  --name "liftr_container_2275e7f7_543a_40f3_8c55_0d096f74c368"
+#   -u `id -u $USER` -v "C:/Users/Seth/Desktop/tgip_mixomic:/liftrroot/"
+#   tgipMixomics_12082021 Rscript -e "library('knitr');library('rmarkdown');library('shiny');setwd('/liftrroot/');render(input
+#   = 'tgipMixomics_12082021.Rmd')"
+

@@ -1,0 +1,795 @@
+---
+title: "Mixomics TGIP sRNA and mRNA"
+author: "Seth Barribeau"
+date: "2021-07-16"
+output: rmarkdown::html_document
+liftr:
+  maintainer: "Seth Barribeau"
+  email: "seth.barribeau@gmail.com"
+  from: "rocker/verse3.6.1"
+  pandoc: true
+  texlive: false
+  sysdeps:
+    - gfortran
+  cran:
+    - edgeR
+    - pacman
+  bioc:
+    - mixOmics/6.16.3
+#  remotes:
+#    - "nanxstats/liftr"
+#  include: "DockerfileSnippet"
+---
+
+
+
+Based on [THIS TUTORIAL](http://mixomics.org/mixdiablo/case-study-tcga/) in Diablo.
+
+Docker image produced using [liftr](https://liftr.me/articles/liftr-intro.html)
+
+```{r loadPackages}
+install.packages("pacman")
+install.packages("BiocManager")
+install.packages(c( "tidyverse", "ggplot2", "edgeR", "liftr", "workflowr",'BiocManager'), dependencies = TRUE, INSTALL_opts = '--no-lock')
+ 
+install.packages(c("here"), dependencies = TRUE, INSTALL_opts = '--no-lock')
+
+BiocManager::install('mixOmics',INSTALL_opts = '--no-lock', force =TRUE)
+
+pacman::p_load("here", "tidyverse", 'ggplot2', 'mixOmics', 'edgeR')
+
+library(here)
+library(ggplot2)
+library(mixOmics)
+library(edgeR)
+# library("workflowr")
+
+```
+
+```{r loadData}
+df = read.csv(here('data', 'mRNA_miRNA_sRNA_noZero_TABLE2020.tsv'), sep='\t', header=T)
+matTreat = c(rep('Primed',9), rep('Unprimed', 9))
+dauTreat = rep(c(rep('G+', 3), rep('G-', 3), rep('Naive', 3)), 2)
+colTreat = rep(c('1', '2', '3'), 6)
+combTreat = paste(matTreat, dauTreat, sep='_')
+
+# length(matTreat);length(dauTreat); length(colTreat); length(combTreat)
+```
+
+Tidy up the dataframe
+
+```{r dfCleanup}
+`%!in%` <- Negate(`%in%`)
+
+# this function takes a df with 'Geneid' as identifier. subsets duplicates into one df then sums the same id values. Keeps the non duplicated samples sep. Returns a list of df's one duplicates one nondup. 
+dropDupes=function(indf){
+  `%!in%` <- Negate(`%in%`)                             # opposite of %in%
+  map=data.frame(Geneid=indf$Geneid, type = indf$type)  # get type and id separated.
+  dupes = indf[duplicated(indf$Geneid),]                # get only the duplicated rows
+  idDupes = unique(dupes$Geneid)                        # get only the id's of duplicates
+  notdupes = indf[indf$Geneid %!in% idDupes,]           # df of non duplicated
+  print('Number of duplicates')         
+  print(length(idDupes)) # number of duplicates
+  print('Number of non duplicates')
+  print(length(notdupes$Geneid)) # number not duplicated
+  newdf = data.frame()
+  cnt = 1
+  for(id in idDupes){                                   # loop through id's of duplicated geneids
+    dupSum = colSums(dupes[dupes$Geneid %in%id,2:19])   # get sum of each matching row for each condition
+    # dupSum = cbind(dupSum, dupes$type)          # add to new df
+    # print(dupSum)
+    newdf = rbind(newdf, dupSum)
+    newdf$Geneid[cnt] = id
+    newdf$type[cnt] = dupes$type[cnt]
+    cnt = cnt+1 # try and add gene id to the rows!!
+  }
+  colnames(newdf)[1:18] = colnames(indf[2:19]) #19!!                # rename headers to match input file [linked to this partic. format]
+  duplicates = newdf # !!cbind(Geneid=idDupes, newdf)             # add geneids
+  # duplicates = merge(duplicates, map, by='Geneid')      # merge with id's and type of nucl
+  duplicates = duplicates[,c(19,1:18,20)]  # reorder so matches not dupe
+
+  data = list(duplicates = duplicates,                  # make list of dfs
+              notduplicates = notdupes[,1:20])
+              # rawdupfile=newdf)
+  return(data)
+}
+
+# drop duplicates
+test = dropDupes(df)
+df_nodupes = rbind(test$duplicates, test$notduplicates)
+
+# nodupeOnly = test$notduplicates
+# dupeOnly = test$duplicates
+
+mRNA = df_nodupes[df_nodupes$type=='mRNA',1:19] # drop tots and type
+miRNA = df_nodupes[df_nodupes$type=='miRNA',1:19]
+sRNA = df_nodupes[df_nodupes$type=='sRNA',1:19]
+```
+
+Normalize the individual data subsets (mRNA, miRNNA, sRNA) using edgeR. Since the miRNA and sRNA are sequenced in same libraries I'm normalizing together
+
+```{r edgeRNorm}
+# library(edgeR)
+misRNA =rbind(miRNA, sRNA)
+
+qmRNA<-mRNA
+qsmall<-misRNA
+row.names(qmRNA)<-qmRNA$Geneid
+row.names(qsmall)<-qsmall$Geneid 
+
+dgListm <- DGEList(counts=qmRNA[,2:19], genes=rownames(qmRNA))
+dgLists <- DGEList(counts=qsmall[,2:19], genes=rownames(qsmall))
+# dgListm;dgLists
+# head(dgListm$counts)
+# head(dgListm$genes)
+
+countsPerMillion_m <- cpm(dgListm)
+countsPerMillion_s <- cpm(dgLists)
+summary(countsPerMillion_m)
+summary(countsPerMillion_s)
+
+countCheck_m <- countsPerMillion_m > 1
+countCheck_s <- countsPerMillion_s > 1
+# head(countCheck_m)
+# head(countCheck_s)
+keep_m <- which(rowSums(countCheck_m) >= 9) # half of samples
+keep_s <- which(rowSums(countCheck_s) >= 9)
+dgListm <- dgListm[keep_m,]
+dgLists <- dgLists[keep_s,]
+# summary(cpm(dgListm)) #
+# summary(cpm(dgLists)) #
+
+# head(countsPerMillion_m)
+# head(countsPerMillion_s)
+
+# dim(countsPerMillion_m) # 9670
+# length(keep_m) # 8369
+
+# dim(countsPerMillion_s) # 14495
+# length(keep_s) # 4222
+
+reducedCPM_m = countsPerMillion_m[keep_m,]
+reducedCPM_s = countsPerMillion_s[keep_s,]
+```
+
+Need to split again into miRNA and sRNA
+
+```{r splitSmall}
+workings=reducedCPM_s
+wkgmi = subset(workings, row.names(workings) %in% miRNA$Geneid )
+wkgsi = subset(workings,   row.names(workings)%in%sRNA$Geneid)
+
+```
+
+Transpose dfs for mixomics. The df produced after cpm norm have rownames already set to gene names. Uncomment out lines if those are in a Geneid column as in counts file
+
+```{r transp}
+renameT=function(indf){
+  # newdf = dropDupes(indf)
+  newdf=indf
+  #  row.names(newdf) = newdf$Geneid 
+   # newdf=newdf[,-1] # drop gene name
+  newdf = t(newdf)
+  return(newdf)
+}
+
+
+
+mRNA_T=renameT(reducedCPM_m)
+miRNA_T=renameT(wkgmi) 
+# miRNA_T=renameT(miRNAnd)#no dupes only
+# miRNA_Td=renameT(miRNAdup)#no dupes only
+sRNA_T=renameT(wkgsi)
+
+# dim(reducedCPM_m); dim(wkgmi);dim(wkgsi)
+# dim(mRNA_T);dim(miRNA_T);dim(sRNA_T)
+
+# make list format for diablo
+data = list(mRNA = mRNA_T, 
+            miRNA = miRNA_T, 
+            sRNA = sRNA_T)
+
+# save reformatted df for use again if needed
+
+
+write.csv(mRNA, here('output', 'mRNA_mixomics.csv'), row.names = F)#C:\Users\Seth\Box Sync\_mixomics\mixomics.Rmd
+write.csv(miRNA, here('output', 'miRNA_mixomics.csv'), row.names = F)#C:\Users\Seth\Box Sync\_mixomics\mixomics.Rmd
+write.csv(sRNA, here('output', 'sRNA_mixomics.csv'), row.names = F)#C:\Users\Seth\Box Sync\_mixomics\mixomics.Rmd
+# 
+# data2 = data
+# data2$Y = Y
+# save(data, file='C:\\Users\\Seth\\Box Sync\\_mixomics\\data_mixomics.RData')
+# save(data2, file='C:\\Users\\Seth\\Box Sync\\_mixomics\\data_mixomics_with_Y.RData')
+
+
+# check dimension
+# lapply(data, dim)
+# lapply(data, length)
+
+Y = combTreat # not sure I want the combo treatment here
+# Ym = matTreat
+# Yd = dauTreat
+# Yc = colTreat
+# summary(Y)
+
+```
+
+
+Run PCA
+```{r}
+MyResult.pca <- pca(cbind(data$mRNA, data$miRNA, data$sRNA))  # 1 Run the method
+plotIndiv(MyResult.pca) # 2 Plot the samples
+
+```
+
+Check the correllation values between mRNA, miRNA, sRNA
+
+```{r getCorr}
+sgccda.res = block.splsda(X = data, Y = Y, ncomp = 3) 
+
+plotDiablo(sgccda.res, ncomp=3) # get correlations
+
+```
+
+Specify the design correlation matrix from above. V. High correlation. STicking with the highly correlated values will select more of the strongly correlated features (high in mRNA and miRNA for eg). These are not necessarily the most discriminatory. Using smaller correlation value will create better discrimination (unsupervised clustering)
+
+```{r highCorrDesign}
+design = matrix(c(0,0.88,0.94,0.88,0,0.96,0.94,0.96,0), ncol = length(data), nrow = length(data), 
+                 dimnames = list(names(data), names(data)))
+design
+```
+
+Do the same for lower corrlation for clustering
+```{r lowCorrDesign}
+design2 = matrix(0.1, ncol = length(data),  nrow = length(data), #length(data), 
+                dimnames = list(names(data), names(data)))
+diag(design2) = 0
+
+design2
+
+```
+
+```{r component no}
+set.seed(123) # for reproducibility, only when the `cpus' argument is not used
+# library(mixOmics)
+sgccda.res = block.splsda(X = data, Y = Y, ncomp = 6, design = design)
+sgccda.res2 = block.splsda(X = data, Y = Y, ncomp = 6, design = design2)
+
+# this code takes a couple of min to run
+perf.diablo = perf(sgccda.res, validation = 'Mfold', folds = 3, nrepeat = 10) 
+perf.diablo2 = perf(sgccda.res2, validation = 'Mfold', folds = 3, nrepeat = 10)
+
+#perf.diablo  # lists the different outputs
+plot(perf.diablo) 
+plot(perf.diablo2)
+
+perf.diablo$choice.ncomp$WeightedVote
+ncomp = perf.diablo$choice.ncomp$WeightedVote["Overall.BER", "centroids.dist"]
+```
+
+
+
+
+
+```{r keepx}
+#set.seed(123) # for reproducibility, only when the `cpus' argument is not used 
+test.keepX_lots = list (mRNA = c(5:50), # 
+                   miRNA =c(5:50),
+                   sRNA = c(5:50))
+
+test.keepX_few = list (mRNA = c(5:9, seq(10,49,5)), # 
+                   miRNA =c(5:9, seq(10,49,5)),
+                   sRNA = c(5:9, seq(10,49,5)))
+
+
+# BPPARAM <- BiocParallel::MulticoreParam(workers = parallel::detectCores()-1) # DOESN'T WORK ON WINDOWS.
+BPPARAM <- BiocParallel::SnowParam(workers = parallel::detectCores()-1)
+tune.TCGA = tune.block.splsda(X = data, Y = Y, ncomp = ncomp, # takes a long time
+                              test.keepX = test.keepX_lots, design = design,
+                              validation = 'Mfold', folds = 3, nrepeat = 1, # dropped to 3 from 10
+                              BPPARAM = BPPARAM, 
+                              dist = "centroids.dist")
+# did not converge. found online to fix?
+#   there is no package called ‘DESeq2’
+
+MyResult.diablo2 <- block.splsda(X=data, Y=Y, ncomp=6, keepX=list.keepX, design= design)
+perf.diablo = perf(MyResult.diablo2, validation = 'loo', BPPARAM=BPPARAM)
+plot(perf.diablo, col = color.mixo(5:7), sd = TRUE, legend.position = 'horizontal')
+
+
+list.keepX = tune.TCGA$choice.keepX
+list.keepX
+sgccda.res = block.splsda(X = data, Y = Y, ncomp = ncomp, 
+                          keepX = list.keepX, design = design)
+sgccda.res   # list the different functions of interest related to that object
+
+sgccda.res$design
+
+# mrna variables selected on component 1 ... 
+selectVar(sgccda.res, block = 'mRNA', comp = 1)$mRNA$name 
+# [1] "LOC100649251" vitellogenin https://www.ncbi.nlm.nih.gov/gene/100649251
+# "LOC100644777,LOC100648533" breast cancer metastasis-suppressor 1-like protein https://www.ncbi.nlm.nih.gov/gene/100644777,  enolase https://www.ncbi.nlm.nih.gov/gene/100648533
+# "LOC100650055" glutamate dehydrogenase, mitochondrial, https://www.ncbi.nlm.nih.gov/gene/100650055
+# "LOC100649657" apoptosis-inducing factor 3, https://www.ncbi.nlm.nih.gov/gene/100649657  
+# "LOC100650563" protein arginine N-methyltransferase 5 https://www.ncbi.nlm.nih.gov/gene/100650563
+# "Argk"                     https://www.ncbi.nlm.nih.gov/gene/100631087
+# [7] "LOC100642761"              not in ncbi
+# "LOC100647436" succinate dehydrogenase cytochrome b560 subunit, mitochondrial https://www.ncbi.nlm.nih.gov/gene/100647436              
+# "LOC100642686" ankyrin-3 https://www.ncbi.nlm.nih.gov/gene/100642686             
+
+selectVar(sgccda.res, block = 'miRNA', comp = 1)$miRNA$name 
+# [1] "NW_003565985.1_26226"  "NC_015777.1_17856"     "NC_015767.1_7711"      "bte-mir-125_MI0001578" "bte-let-7_MI0005726_" 
+
+selectVar(sgccda.res, block = 'sRNA', comp = 1)$sRNA$name 
+# [1] "rnd-5_family-1294_2278_3864_TE" "rna5436_UTR5_UTR5"              "rnd-4_family-489_7_749_TE"      "rnd-5_family-825_1652_2145_TE"  "rnd-5_family-275_889_1361_TE"  
+# [6] "rnd-5_family-1739_1091_2514_TE" "rna20318_UTR5_UTR5"            
+
+```
+```{r}
+plotDiablo(sgccda.res, ncomp = 1)
+plotIndiv(sgccda.res, ind.names = FALSE, legend = TRUE, title = 'DIABLO') # 
+plotArrow(sgccda.res, ind.names = FALSE, legend = TRUE, title = 'DIABLO')
+```
+```{r variablePlots}
+plotVar(sgccda.res, var.names = FALSE, style = 'graphics', legend = TRUE,  # overly full.. what can this say?!
+        pch = c(16, 17, 15), cex = c(2,2,2), col = c('darkorchid', 'brown1', 'lightgreen'))
+```
+
+# Circos seems uninformative. Everything is connected to everything. 
+
+```{r circos}
+circosPlot(sgccda.res, cutoff = 0.7, line = TRUE, # works but hard to tell
+           color.blocks= c('darkorchid', 'brown1', 'lightgreen'),
+           color.cor = c("chocolate3","grey20"), size.labels = 1.5)
+```
+
+```{r network}
+
+network(sgccda.res, blocks = c(1,2,3), # doesnt work in rstudio. save as image w save and name.save
+        color.node = c('darkorchid', 'brown1', 'lightgreen'), cutoff = 0.4)
+```
+The network can be saved in a .gml format to be input into the software Cytoscape, using the R package igraph
+
+```{r savenetw}
+
+library(igraph)
+my.network = network(sgccda.res, blocks = c(1,2,3),
+        color.node = c('darkorchid', 'brown1', 'lightgreen'), cutoff = 0.4)
+write.graph(my.network$gR, file = "C:\\Users\\Seth\\Box Sync\\_TGIP_analyses\\myNetwork_all_combTreatm.gml", format = "gml")
+
+```
+
+```{r getLoadingPlot}
+plotLoadings(sgccda.res, comp = 2, contrib = 'max', method = 'median') # different numbers to the vignette in website http://mixomics.org/mixdiablo/case-study-tcga/ 
+plotLoadings(sgccda.res, comp = 1, contrib = 'max', method = 'median')
+```
+
+```{r heatmapMulti}
+# plot.new() doesn't work in Rstudio in line. Works in terminal. 
+cimDiablo(sgccda.res)
+# plot.new
+```
+
+
+```{r performance test}
+set.seed(123)# for reproducibility, only when the `cpus' argument is not used
+perf.diablo = perf(sgccda.res, validation = 'Mfold', M = 10, nrepeat = 10, # fails
+                   dist = 'centroids.dist')
+perf.diablo  # lists the different outputs
+
+# Performance with Majority vote
+perf.diablo$MajorityVote.error.rate
+```
+
+```{r weightedpred}
+# Performance with Weighted prediction
+perf.diablo$WeightedVote.error.rate
+```
+
+```{r roc curv}
+auc.splsda = auroc(sgccda.res, roc.block = "miRNA", roc.comp = 2)
+
+```
+
+
+Now what?!
+
+1. Read the paper. Not sure this is the right way to analyze these data. 
+AN/NA/AA
+
+Where does NN fit in?
+
+NE/NA/AE
+
+```{r aa}
+the_a = c(1:3,7:12)
+the_e = c(4:6, 10:15)
+getList = function(inList, rowIndx){
+  newList=list()
+  for(l in inList){
+    newl = inList[c(rowIndx),]
+    newList$l = newl
+  }
+  return(newList)
+}
+
+alist = list(mRNA=data$mRNA[c(1:3,7:12,16:18),],
+             miRNA=data$miRNA[c(1:3,7:12,16:18),],
+             sRNA=data$sRNA[c(1:3,7:12,16:18),]
+              )
+elist = list(mRNA=data$mRNA[c(4:6, 10:15,16:18),],
+             miRNA=data$miRNA[c(4:6, 10:15,16:18),],
+             sRNA=data$sRNA[c(4:6, 10:15,16:18),]
+              )
+# alist =getList(data, '2')
+
+for(i in alist){print(dim(i))}
+data$mRNA[,1]
+alist$mRNA[,1]
+Yam = c(rep('Primed', 6), rep('Unprimed', 6))
+Yad = c(rep('G+', 3), rep('Naive', 3), rep('G+', 3), rep('Naive', 3))
+```
+
+
+
+
+
+
+Run PCA
+```{r}
+MyResult.pca_a <- pca(cbind(alist$mRNA, alist$miRNA, alist$sRNA))  # 1 Run the method
+plotIndiv(MyResult.pca_a) # 2 Plot the samples
+
+MyResult.pca_e <- pca(cbind(elist$mRNA, elist$miRNA, elist$sRNA))  # 1 Run the method
+plotIndiv(MyResult.pca_e) # 2 Plot the samples
+```
+```{r parameter}
+design = matrix(0.1, ncol = length(alist), nrow = length(alist), 
+                dimnames = list(names(alist), names(alist)))
+diag(design) = 0
+
+design 
+```
+
+
+```{r component no}
+
+sgccda.res = block.splsda(X = alist, Y = Yam, ncomp = 5, # warning The SGCCA algorithm did not converge with raw counts, normalized w cpm avoids
+                           design = design)
+
+set.seed(123) # for reproducibility, only when the `cpus' argument is not used
+# this code takes a couple of min to run
+perf.diablo = perf(sgccda.res, validation = 'Mfold', folds = 3, nrepeat = 10) # error here when eg of 10, suggests minimum in table Y : 3
+
+#perf.diablo  # lists the different outputs
+plot(perf.diablo) 
+perf.diablo$choice.ncomp$WeightedVote
+ncomp = perf.diablo$choice.ncomp$WeightedVote["Overall.BER", "centroids.dist"]
+
+```
+
+```{r keepx}
+#set.seed(123) # for reproducibility, only when the `cpus' argument is not used #### no idea what these settings are
+test.keepX = list (mRNA = c(5:9, seq(10, 18, 2), seq(20,30,5)),
+                   miRNA = c(5:9, seq(10, 18, 2), seq(20,30,5)),
+                   sRNA = c(5:9, seq(10, 18, 2), seq(20,30,5)))
+
+# BPPARAM <- BiocParallel::MulticoreParam(workers = parallel::detectCores()-1) # DOESN'T WORK ON WINDOWS.
+BPPARAM <- BiocParallel::SnowParam(workers = parallel::detectCores()-1)
+tune.TCGA = tune.block.splsda(X = alist, Y = Yam, ncomp = ncomp, # takes a long time
+                              test.keepX = test.keepX, design = design,
+                              validation = 'Mfold', folds = 3, nrepeat = 1, # dropped to 3 from 10
+                              BPPARAM = BPPARAM, 
+                              dist = "centroids.dist")
+# did not converge.
+
+list.keepX = tune.TCGA$choice.keepX
+list.keepX
+sgccda.res = block.splsda(X = data, Y = Y, ncomp = ncomp, 
+                          keepX = list.keepX, design = design)
+sgccda.res   # list the different functions of interest related to that object
+
+sgccda.res$design
+
+# mrna variables selected on component 1 ... 
+selectVar(sgccda.res, block = 'mRNA', comp = 1)$mRNA$name 
+# [1] "LOC100645755" uncharacterized  
+# "LOC100642442"beta-1,3-glucan-binding protein 
+# "LOC100651862" 3-ketoacyl-CoA thiolase, mitochondrial
+# "LOC100642761"  -- no result ncbi
+# "LOC100651143" phosphoglycerate mutase 2 [
+# "LOC100644380" syndecan 
+
+selectVar(sgccda.res, block = 'miRNA', comp = 1)$miRNA$name 
+# [1] "NC_015767.1_7711"      "NC_015777.1_17856"     "NW_003565985.1_26226"  "NC_015772.1_12952"     "NW_003565831.1_24775" 
+# [6] "bte-mir-125_MI0001578"
+
+selectVar(sgccda.res, block = 'sRNA', comp = 1)$sRNA$name 
+# [1] "rnd-6_family-1476_43_1685_TE"   "rnd-6_family-1476_1957_4172_TE" "rnd-5_family-825_1_322_TE"     
+# [4] "rnd-5_family-1294_2278_3864_TE" "rnd-5_family-1739_328_3428_TE" 
+
+```
+```{r}
+plotDiablo(sgccda.res, ncomp = 1)
+# plotIndiv(sgccda.res, ind.names = FALSE, legend = TRUE, title = 'DIABLO') # fail subscript out of bounds only on block...EG dataset has 3 levels. Here we have 6? too many grps in Y? Try w fewer, eg. maternal treatment.
+# plotArrow(sgccda.res, ind.names = FALSE, legend = TRUE, title = 'DIABLO')
+```
+```{r variablePlots}
+plotVar(sgccda.res, var.names = FALSE, style = 'graphics', legend = TRUE, 
+        pch = c(16, 17, 15), cex = c(2,2,2), col = c('darkorchid', 'brown1', 'lightgreen'))
+```
+
+
+# Split by question.
+
+1. How does bacterial exposure alter expression (NN, NA, NE)
+2. How does priming affect expression when exposed to pathogen (AN, NA, AA)
+3. How does missmatch look (NE, NA, AE)
+
+First split up the data
+
+
+```{r splitLists}
+bactData_mRNA <- data$mRNA[rownames(data$mRNA) %in% bact, ]  # Extract rows from data
+dim(bactData_mRNA)
+bactData_miRNA <- data$miRNA[rownames(data$miRNA) %in% bact, ]  # Extract rows from data
+bactData_sRNA <- data$sRNA[rownames(data$sRNA) %in% bact, ]  # Extract rows from data
+bData <- list(
+  mRNA = bactData_mRNA,
+  miRNA = bactData_miRNA,
+  sRNA = bactData_sRNA
+)
+
+
+pData_mRNA <- data$mRNA[rownames(data$mRNA) %in% priming, ]  # Extract rows from data
+dim(pData_mRNA)
+pData_miRNA <- data$miRNA[rownames(data$miRNA) %in% priming, ]  # Extract rows from data
+pData_sRNA <- data$sRNA[rownames(data$sRNA) %in% priming, ]  # Extract rows from data
+pData <- list(
+  mRNA = pData_mRNA,
+  miRNA = pData_miRNA,
+  sRNA = pData_sRNA
+)
+
+
+mData_mRNA <- data$mRNA[rownames(data$mRNA) %in% priming, ]  # Extract rows from data
+dim(sData_mRNA)
+mData_miRNA <- data$miRNA[rownames(data$miRNA) %in% priming, ]  # Extract rows from data
+mData_sRNA <- data$sRNA[rownames(data$sRNA) %in% priming, ]  # Extract rows from data
+mData <- list(
+  mRNA = sData_mRNA,
+  miRNA = sData_miRNA,
+  sRNA = sData_sRNA
+)
+
+
+```
+
+Clarify Y groups
+```{r splitStudies}
+priming=c('AA1', 'AA2', 'AA3', 'AN1', 'AN2', 'AN3', 'NA1', 'NA2', 'NA3')
+pY = c("Primed_G+","Primed_G+","Primed_G+","Primed_Naive" ,"Primed_Naive" ,"Primed_Naive","Unprimed_G+" ,"Unprimed_G+" ,"Unprimed_G+"  )
+bact = c('NN1', 'NN2', 'NN3', 'NA1', 'NA2', 'NA3', 'NE1', 'NE2', 'NE3')
+bY = c("Unprimed_Naive","Unprimed_Naive","Unprimed_Naive","Unprimed_G+" ,"Unprimed_G+" ,"Unprimed_G+","Unprimed_G-","Unprimed_G-","Unprimed_G-")
+mism = c('AE1', 'AE2', 'AE3', 'NA1', 'NA2', 'NA3', 'NE1', 'NE2', 'NE3')
+mY=c( "Primed_G-" , "Primed_G-" , "Primed_G-" ,"Unprimed_G+" ,"Unprimed_G+" ,"Unprimed_G+","Unprimed_G-","Unprimed_G-","Unprimed_G-")
+
+```
+
+
+
+
+
+```{r getCorr}
+sgccda.res = block.splsda(X = bData, Y = bY, ncomp = 3) 
+
+plotDiablo(sgccda.res, ncomp=3) # get correlations
+
+```
+
+```{r parem}
+design = matrix(c(0,0.85,0.95,0.85,0,0.95,0.95,0.95,0), ncol = length(data), nrow = length(data), 
+                 dimnames = list(names(data), names(data)))
+
+                 # dimnames = list(names(data), names(data)))
+design
+
+```
+
+```{r component no}
+
+sgccda.res = block.splsda(X = data, Y = Y, ncomp = 3, # warning The SGCCA algorithm did not converge with raw counts, normalized w cpm avoids
+                           design = design)
+
+set.seed(123) # for reproducibility, only when the `cpus' argument is not used
+# this code takes a couple of min to run
+perf.diablo = perf(sgccda.res, validation = 'Mfold', folds = 3, nrepeat = 10) # error here when eg of 10, suggests minimum in table Y : 3
+
+#perf.diablo  # lists the different outputs
+plot(perf.diablo) 
+perf.diablo$choice.ncomp$WeightedVote
+ncomp = perf.diablo$choice.ncomp$WeightedVote["Overall.BER", "centroids.dist"]
+
+```
+
+```{r keepx}
+#set.seed(123) # for reproducibility, only when the `cpus' argument is not used #### no idea what these settings are
+test.keepX = list (mRNA = c(5:9, seq(10, 18, 2), seq(20,30,5)), # what are these settings??
+                   miRNA = c(5:9, seq(10, 18, 2), seq(20,30,5)),
+                   sRNA = c(5:9, seq(10, 18, 2), seq(20,30,5)))
+
+# BPPARAM <- BiocParallel::MulticoreParam(workers = parallel::detectCores()-1) # DOESN'T WORK ON WINDOWS.
+BPPARAM <- BiocParallel::SnowParam(workers = parallel::detectCores()-1)
+tune.TCGA = tune.block.splsda(X = data, Y = Y, ncomp = ncomp, # takes a long time
+                              test.keepX = test.keepX, design = design,
+                              validation = 'Mfold', folds = 3, nrepeat = 1, # dropped to 3 from 10
+                              BPPARAM = BPPARAM, 
+                              dist = "centroids.dist")
+# did not converge. found online to fix?
+#   there is no package called ‘DESeq2’
+
+MyResult.diablo2 <- block.splsda(X=data, Y=Y, ncomp=6, keepX=list.keepX, design= design)
+perf.diablo = perf(MyResult.diablo2, validation = 'loo', BPPARAM=BPPARAM)
+plot(perf.diablo, col = color.mixo(5:7), sd = TRUE, legend.position = 'horizontal')
+
+
+list.keepX = tune.TCGA$choice.keepX
+list.keepX
+sgccda.res = block.splsda(X = data, Y = Y, ncomp = ncomp, 
+                          keepX = list.keepX, design = design)
+sgccda.res   # list the different functions of interest related to that object
+
+sgccda.res$design
+
+# mrna variables selected on component 1 ... 
+selectVar(sgccda.res, block = 'mRNA', comp = 1)$mRNA$name 
+# [1] "LOC100649251" vitellogenin https://www.ncbi.nlm.nih.gov/gene/100649251
+# "LOC100644777,LOC100648533" breast cancer metastasis-suppressor 1-like protein https://www.ncbi.nlm.nih.gov/gene/100644777,  enolase https://www.ncbi.nlm.nih.gov/gene/100648533
+# "LOC100650055" glutamate dehydrogenase, mitochondrial, https://www.ncbi.nlm.nih.gov/gene/100650055
+# "LOC100649657" apoptosis-inducing factor 3, https://www.ncbi.nlm.nih.gov/gene/100649657  
+# "LOC100650563" protein arginine N-methyltransferase 5 https://www.ncbi.nlm.nih.gov/gene/100650563
+# "Argk"                     https://www.ncbi.nlm.nih.gov/gene/100631087
+# [7] "LOC100642761"              not in ncbi
+# "LOC100647436" succinate dehydrogenase cytochrome b560 subunit, mitochondrial https://www.ncbi.nlm.nih.gov/gene/100647436              
+# "LOC100642686" ankyrin-3 https://www.ncbi.nlm.nih.gov/gene/100642686             
+
+selectVar(sgccda.res, block = 'miRNA', comp = 1)$miRNA$name 
+# [1] "NW_003565985.1_26226"  "NC_015777.1_17856"     "NC_015767.1_7711"      "bte-mir-125_MI0001578" "bte-let-7_MI0005726_" 
+
+selectVar(sgccda.res, block = 'sRNA', comp = 1)$sRNA$name 
+# [1] "rnd-5_family-1294_2278_3864_TE" "rna5436_UTR5_UTR5"              "rnd-4_family-489_7_749_TE"      "rnd-5_family-825_1652_2145_TE"  "rnd-5_family-275_889_1361_TE"  
+# [6] "rnd-5_family-1739_1091_2514_TE" "rna20318_UTR5_UTR5"            
+
+```
+```{r}
+plotDiablo(sgccda.res, ncomp = 1)
+plotIndiv(sgccda.res, ind.names = FALSE, legend = TRUE, title = 'DIABLO') # fail subscript out of bounds only on block...EG dataset has 3 levels. Here we have 6? too many grps in Y? Try w fewer, eg. maternal treatment.
+# plotArrow(sgccda.res, ind.names = FALSE, legend = TRUE, title = 'DIABLO')
+```
+```{r variablePlots}
+plotVar(sgccda.res, var.names = FALSE, style = 'graphics', legend = TRUE,  # fails Error: The number of components for one selected block ' mRNA - miRNA - sRNA ' is 1. The number of components must be superior or equal to 2.
+
+        pch = c(16, 17, 15), cex = c(2,2,2), col = c('darkorchid', 'brown1', 'lightgreen'))
+```
+
+# Circos seems uninformative. Everything is connected to everything. 
+
+```{r circos}
+circosPlot(sgccda.res, cutoff = 0.7, line = TRUE, # works but hard to tell
+           color.blocks= c('darkorchid', 'brown1', 'lightgreen'),
+           color.cor = c("chocolate3","grey20"), size.labels = 1.5)
+```
+
+```{r network}
+
+network(sgccda.res, blocks = c(1,2,3), # doesnt work in rstudio. save as image w save and name.save
+        color.node = c('darkorchid', 'brown1', 'lightgreen'), cutoff = 0.4)
+```
+The network can be saved in a .gml format to be input into the software Cytoscape, using the R package igraph
+
+```{r savenetw}
+
+library(igraph)
+my.network = network(sgccda.res, blocks = c(1,2,3),
+        color.node = c('darkorchid', 'brown1', 'lightgreen'), cutoff = 0.4)
+write.graph(my.network$gR, file = "C:\\Users\\Seth\\Box Sync\\_TGIP_analyses\\myNetwork_all_combTreatm.gml", format = "gml")
+
+```
+
+```{r getLoadingPlot}
+plotLoadings(sgccda.res, comp = 2, contrib = 'max', method = 'median') # different numbers to the vignette in website http://mixomics.org/mixdiablo/case-study-tcga/ 
+plotLoadings(sgccda.res, comp = 1, contrib = 'max', method = 'median')
+```
+
+```{r heatmapMulti}
+# plot.new() doesn't work in Rstudio in line. Works in terminal. 
+cimDiablo(sgccda.res)
+# plot.new
+```
+
+
+```{r performance test}
+set.seed(123)# for reproducibility, only when the `cpus' argument is not used
+perf.diablo = perf(sgccda.res, validation = 'Mfold', M = 10, nrepeat = 10, # fails
+                   dist = 'centroids.dist')
+perf.diablo  # lists the different outputs
+
+# Performance with Majority vote
+perf.diablo$MajorityVote.error.rate
+```
+
+```{r weightedpred}
+# Performance with Weighted prediction
+perf.diablo$WeightedVote.error.rate
+```
+
+```{r roc curv}
+auc.splsda = auroc(sgccda.res, roc.block = "miRNA", roc.comp = 2)
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+```{r scraps, echo=FALSE, eval=FALSE}
+# length(miRNAdup$Geneid);length(unique(miRNAdup$Geneid))
+
+# newmiRNA = dropDupes(miRNA)
+# miRNA_T=renameT(newmiRNA) # error with lots of duplicates
+sRNA_T = renameT(sRNA)
+
+length(unique(miRNA$Geneid)) #412
+length(miRNA$Geneid) #759 
+
+# only find one. grep('NC_015762.1_1083', miRNA)
+dupes = miRNA[duplicated(miRNA$Geneid),]
+dim(dupes)
+
+miRNA[grep('NW_003566042.1_27065', miRNA$Geneid),]
+
+colSums(miRNA[miRNA$Geneid %in%'NW_003566042.1_27065',2:19])
+
+install.packages('data.table')
+library(data.table)
+miRNA[miRNA$Geneid %like% "NW_003566042.1_27065", ]
+
+install.packages('tidyverse')
+library(tidyverse)
+
+dupes %>%
+  group_by(Geneid) %>%
+  summarise(colSums())
+
+ miRNA %>% group_by(Geneid) %>% summarise(MTOW = sum(MTOW), nr.flights = sum(nr.flights))
+
+
+library(plyr)
+ddply(miRNA,~Date + AD + Runway,summarise,MTOW=sum(MTOW),nr.flights=sum(nr.flights))
+sapply(unique(colnames(A)), function(x) rowSums(A[,grepl(x, colnames(A))]))
+
+
+sRNA_T=renameT(sRNA)
+```
