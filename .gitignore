@@ -4,8 +4,6 @@
 .Ruserdata
 .Rapp.history
 .DS_Store
-archive
-archive/*
 analysis/figure
 analysis/*png
 analysis/*html
