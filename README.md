@@ -9,13 +9,13 @@ These analyses should be executed in a Docker container. To do so, ensure you ha
 docker build -t mixomic .
 ```
 
-On Windows, the following command only works on powershell.
-```powershell
-docker run --rm -it -p 8787:8787/tcp -v C:/Users/Seth/Desktop/tgip_mixomic:/home/rstudio mixomic:latest
+On Windows, the following command only works on powershell. It should behave better on bash on an 'nix system. If this isn't cooperating, you may need to replace `$(pwd)` with the full path. 
 
+```powershell
+docker run --rm -it -p 8787:8787/tcp -v $(pwd):/home/rstudio mixomic:latest
 ```
 
-Once this is running, you can navigate to [http://localhost:8787/](http://localhost:8787/) to access Rstudio. Ensure working directory is set to `/home/rstudio` and can work through the `tgipmixomics.Rmd` script.
+Once this is running, you can navigate to [http://localhost:8787/](http://localhost:8787/) to access Rstudio. Ensure working directory is set to `/home/rstudio` and can work through the `tgipmixomics.Rmd` script. Login default username is `rstudio` and password is `rstudio`.
 
 Input data can be found in the `./data/` directory and all intermediate and output files (includes figures, output dataframes and plots) are stored in the `./output/` directory.) 
 
