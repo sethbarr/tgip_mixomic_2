@@ -1,0 +1,86 @@
+---
+title: "Mixomics TGIP matching output gene id's "
+author: "Seth Barribeau"
+date: "2021-07-16"
+output: rmarkdown::html_document
+liftr:
+  maintainer: "Seth Barribeau"
+  email: "seth.barribeau@gmail.com"
+  from: "rocker/verse3.6.1"
+  pandoc: true
+  texlive: false
+  sysdeps:
+    - gfortran
+  cran:
+    - here
+    - pacman
+    # - igraph
+  bioc:
+    - mixOmics/6.16.3
+#  remotes:
+#    - "nanxstats/liftr"
+#  include: "DockerfileSnippet"
+---
+
+Task, to merge output files from mixomics with some sort of useful gene name for mRNA.
+
+```{r load libs}
+library(pacman)
+pacman::p_load("here", "tidyverse", 'ggplot2')
+# here::i_am("getGeneNames.Rmd")
+```
+
+```{r getfiles}
+nameFile <- read.delim('./data/allBterRNAnames_noIso.csv', sep=',', header=TRUE, row=1)
+head(nameFile)
+
+# get files from `./output/` dir and save into object.
+# Circos files
+Circ8HC <- read.delim('./output/Circos_0.8_2021-08-17_highCor_edit.csv', sep=',', header=TRUE, row=1)
+# Circ9HC <- read.delim('./output/Circos_0.9_2021-08-17_highCor.csv', sep=',', header=TRUE, row=1)
+Circ8LC <- read.delim('./output/Circos_0.8_2021-08-17_lowCor_edit.csv', sep=',', header=TRUE, row=1)
+# Circ9LC <- read.delim('./output/Circos_0.9_2021-08-17_lowCor.csv', sep=',', header=TRUE, row=1)
+
+# Heatmap files
+load("./output/heatmap_highCor_2021-08-17.Rda")
+load("./output/heatmap_lowCor_2021-08-17.Rda")
+
+xLC_names = data.frame(xLC$col.names)
+xHC_names = data.frame(xHC$col.names)
+```
+
+Need to rename cases where mapping gave mulitple ID's e.g.: LOC100646083,LOC100646445,LOC100646688, return only first one.
+
+```{r renameIDs}
+# rename gene names and merge with gene names from bter files. 
+# 
+Circ8HC$NEW = matrix(unlist(str_extract_all(rownames(Circ8HC), "^LOC\\d+,*?", simplify=TRUE)), ncol=1)
+Circ9HC$NEW = matrix(unlist(str_extract_all(rownames(Circ9HC), "^LOC\\d+,*?", simplify=TRUE)), ncol=1)
+
+Circ8LC$NEW = matrix(unlist(str_extract_all(rownames(Circ8LC), "^LOC\\d+,*?", simplify=TRUE)), ncol=1)
+Circ9LC$NEW = matrix(unlist(str_extract_all(rownames(Circ9LC), "^LOC\\d+,*?", simplify=TRUE)), ncol=1)
+
+xLC_names$NEW=matrix(unlist(str_extract_all(xLC_names$xLC.col.names, "^LOC\\d+,*?", simplify=TRUE)), ncol=1) #
+xHC_names$NEW=matrix(unlist(str_extract_all(xHC_names$xHC.col.names, "^LOC\\d+,*?", simplify=TRUE)), ncol=1) #)
+
+# xLC_names[xLC_names$NEW==''] <- NA
+```
+
+## Merge files with names. 
+```{r merge}
+# MERGE with nameFile 
+Circ8HC <- merge(Circ8HC, nameFile, by.x='NEW', by.y='LOC', all.x=TRUE)
+Circ8LC <- merge(Circ8LC, nameFile, by.x='NEW', by.y='LOC', all.x=TRUE)
+
+xLC_namesNew=merge(xLC_names, nameFile, by.x='NEW', by.y='LOC', all.x=TRUE)
+xHC_namesNew=merge(xHC_names, nameFile, by.x='NEW', by.y='LOC', all.x=TRUE)
+```
+
+Write out the merged files
+
+```{r write}
+write.table(Circ8HC, file=here("output", "Circos_0.8_2021-08-17_highCor_edit_withNames.csv"), sep=',', quote=FALSE, row.names=FALSE)
+write.table(Circ8LC, file=here("output", "Circos_0.8_2021-08-17_lowCor_withNames.csv"), sep=',', quote=FALSE, row.names=FALSE)
+write.table(xLC_namesNew, file=here("output", "heatmap_lowCor_2021-08-17_withNames.csv"), sep=',', quote=FALSE, row.names=FALSE)
+write.table(xHC_namesNew, file=here("output", "heatmap_highCor_2021-08-17_withNames.csv"), sep=',', quote=FALSE, row.names=FALSE)
+```
