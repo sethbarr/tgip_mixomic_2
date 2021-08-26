@@ -1,0 +1,555 @@
+---
+title: "Mixomics TGIP sRNA and mRNA"
+author: "Seth Barribeau"
+date: "2021-07-16"
+output: rmarkdown::html_document
+liftr:
+  maintainer: "Seth Barribeau"
+  email: "seth.barribeau@gmail.com"
+  from: "rocker/verse3.6.1"
+  pandoc: true
+  texlive: false
+  sysdeps:
+    - gfortran
+  cran:
+    - edgeR
+    - pacman
+    - igraph
+  bioc:
+    - mixOmics/6.16.3
+#  remotes:
+#    - "nanxstats/liftr"
+#  include: "DockerfileSnippet"
+---
+
+
+Based on [THIS TUTORIAL](http://mixomics.org/mixdiablo/case-study-tcga/) in Diablo.
+
+Used [liftr](https://liftr.me/articles/liftr-intro.html) to produce a Docker file for these analyses.
+
+```{r loadPackages}
+pacman::p_load("here", "tidyverse", 'ggplot2', 'edgeR', 'BiocManager', 'igraph', 'mixOmics')
+
+# if packages needed aren't there, install manually below.
+# install.packages(c( 'pacman',"tidyverse", "here", "ggplot2", "edgeR", "liftr", "workflowr",'BiocManager'), dependencies = TRUE, INSTALL_opts = '--no-lock')
+# BiocManager::install('mixOmics',INSTALL_opts = '--no-lock', force =TRUE)
+# 
+# library(ggplot2)
+# library(mixOmics)
+# library(edgeR)
+# library(here)
+```
+
+```{r loadData}
+df = read.csv(here('data', 'mRNA_miRNA_sRNA_noZero_TABLE2020.tsv'), sep='\t', header=T)
+matTreat = c(rep('Primed',9), rep('Unprimed', 9))
+dauTreat = rep(c(rep('G+', 3), rep('G-', 3), rep('Naive', 3)), 2)
+colTreat = rep(c('1', '2', '3'), 6)
+combTreat = paste(matTreat, dauTreat, sep='_')
+```
+
+
+Tidy up the dataframe
+
+```{r dfCleanup}
+`%!in%` <- Negate(`%in%`)
+
+# this function takes a df with 'Geneid' as identifier. subsets duplicates into one df then sums the same id values. Keeps the non duplicated samples sep. Returns a list of df's one duplicates one nondup. 
+dropDupes=function(indf){
+  `%!in%` <- Negate(`%in%`)                             # opposite of %in%
+  map=data.frame(Geneid=indf$Geneid, type = indf$type)  # get type and id separated.
+  dupes = indf[duplicated(indf$Geneid),]                # get only the duplicated rows
+  idDupes = unique(dupes$Geneid)                        # get only the id's of duplicates
+  notdupes = indf[indf$Geneid %!in% idDupes,]           # df of non duplicated
+  print('Number of duplicates')         
+  print(length(idDupes))                                # number of duplicates
+  print('Number of non duplicates')
+  print(length(notdupes$Geneid))                        # number not duplicated
+  newdf = data.frame()
+  cnt = 1
+  for(id in idDupes){                                   # loop through id's of duplicated geneids
+    dupSum = colSums(dupes[dupes$Geneid %in%id,2:19])   # get sum of each matching row for each condition
+    # dupSum = cbind(dupSum, dupes$type)                # add to new df
+    # print(dupSum)
+    newdf = rbind(newdf, dupSum)
+    newdf$Geneid[cnt] = id
+    newdf$type[cnt] = dupes$type[cnt]
+    cnt = cnt+1 # try and add gene id to the rows
+  }
+  colnames(newdf)[1:18] = colnames(indf[2:19])          # rename headers to match input file [linked to this partic. format]
+  duplicates = newdf # !!cbind(Geneid=idDupes, newdf)   # add geneids
+  # duplicates = merge(duplicates, map, by='Geneid')    # merge with id's and type of nucl
+  duplicates = duplicates[,c(19,1:18,20)]               # reorder so matches not dupe
+
+  data = list(duplicates = duplicates,                  # make list of dfs
+              notduplicates = notdupes[,1:20])
+              # rawdupfile=newdf)
+  return(data)
+}
+
+# miRNA = df[df$type=='miRNA',]
+# x=dropDupes(miRNA)
+
+test = dropDupes(df)
+df_nodupes = rbind(test$duplicates, test$notduplicates)
+
+nodupeOnly = test$notduplicates
+dupeOnly = test$duplicates
+
+mRNA = df_nodupes[df_nodupes$type=='mRNA',1:19] # drop tots and type
+miRNA = df_nodupes[df_nodupes$type=='miRNA',1:19]
+sRNA = df_nodupes[df_nodupes$type=='sRNA',1:19]
+```
+
+Normalize the individual data subsets (mRNA, miRNNA, sRNA) using edgeR. Since the miRNA and sRNA are sequenced in same libraries I'm normalizing together
+
+```{r edgeRNorm}
+misRNA =rbind(miRNA, sRNA)
+qmRNA<-mRNA
+qsmall<-misRNA
+row.names(qmRNA)<-qmRNA$Geneid
+row.names(qsmall)<-qsmall$Geneid 
+
+dgListm <- DGEList(counts=qmRNA[,2:19], genes=rownames(qmRNA))
+dgLists <- DGEList(counts=qsmall[,2:19], genes=rownames(qsmall))
+
+countsPerMillion_m <- cpm(dgListm)
+countsPerMillion_s <- cpm(dgLists)
+# summary(countsPerMillion_m)
+# summary(countsPerMillion_s)
+
+countCheck_m <- countsPerMillion_m > 1
+countCheck_s <- countsPerMillion_s > 1
+# head(countCheck_m)
+# head(countCheck_s)
+keep_m <- which(rowSums(countCheck_m) >= 9) # half of samples
+keep_s <- which(rowSums(countCheck_s) >= 9)
+
+dgListm <- dgListm[keep_m,]
+dgLists <- dgLists[keep_s,]
+
+# summary(cpm(dgListm)) #
+# summary(cpm(dgLists)) #
+# dim(countsPerMillion_m) # 9670
+# length(keep_m) # 8369
+# dim(countsPerMillion_s) # 14495
+# length(keep_s) # 4222
+
+reducedCPM_m = countsPerMillion_m[keep_m,]
+reducedCPM_s = countsPerMillion_s[keep_s,]
+```
+
+Need to split again into miRNA and sRNA
+
+```{r splitSmall}
+workings=reducedCPM_s
+wkgmi = subset(workings, row.names(workings) %in% miRNA$Geneid )
+wkgsi = subset(workings,   row.names(workings)%in%sRNA$Geneid)
+
+```
+Transpose dfs for mixomics. The df produced after cpm norm have rownames already set to gene names. Uncomment out lines if those are in a Geneid column as in counts file
+
+```{r transp}
+renameT=function(indf){
+  # newdf = dropDupes(indf)
+  newdf=indf
+  #  row.names(newdf) = newdf$Geneid 
+   # newdf=newdf[,-1] # drop gene name
+  newdf = t(newdf)
+  return(newdf)
+}
+
+
+
+mRNA_T=renameT(reducedCPM_m)
+miRNA_T=renameT(wkgmi) 
+# miRNA_T=renameT(miRNAnd) #no dupes only
+# miRNA_Td=renameT(miRNAdup) #no dupes only
+sRNA_T=renameT(wkgsi)
+
+dim(reducedCPM_m); dim(wkgmi);dim(wkgsi)
+# dim(mRNA_T);dim(miRNA_T);dim(sRNA_T)
+
+# make list format for diablo
+data = list(mRNA = mRNA_T, 
+            miRNA = miRNA_T, 
+            sRNA = sRNA_T)
+
+# save reformatted df for use again if needed
+write.csv(mRNA, here('output', 'mRNA_mixomics.csv'), row.names = F)#C:\Users\Seth\Box Sync\_mixomics\mixomics.Rmd
+write.csv(miRNA, here('output', 'miRNA_mixomics.csv'), row.names = F)#C:\Users\Seth\Box Sync\_mixomics\mixomics.Rmd
+write.csv(sRNA, here('output', 'sRNA_mixomics.csv'), row.names = F)#C:\Users\Seth\Box Sync\_mixomics\mixomics.Rmd
+
+Y = combTreat # not sure I want the combo treatment here
+data2 = data
+data2$Y = Y
+save(data, file=here('output', 'data_mixomics.RData'))
+save(data2, file=here('output', 'data_mixomics_with_Y.RData'))
+# load(here('output', 'data_mixomics.RData')) # to continue from this checkpoint
+# load(here('output', 'data_mixomics_with_Y.RData'))
+
+# check dimension
+# lapply(data, dim)
+# lapply(data, length)
+# summary(Y)
+
+```
+
+
+Run PCA
+```{r}
+col = c('slategrey', 'darkorchid', 'cornflowerblue', 'black', 'firebrick4', 'turquoise4')
+
+
+MyResult.pca <- pca(cbind(data$mRNA, data$miRNA, data$sRNA))  # 1 Run the method
+plotIndiv(MyResult.pca, group =  Y, groupcol.per.group=col) # 2 Plot the samples no coloring, how to do sep?
+```
+
+```{r getCorr}
+sgccda.res = block.splsda(X = data, Y = data2$Y, ncomp = 3) 
+plotDiablo(sgccda.res, ncomp=3) # get correlations ; highly corr
+```
+
+Specify the design correlation matrix from above. V. High correlation. Sticking with the highly correlated values will select more of the strongly correlated features (high in mRNA and miRNA for eg). These are not necessarily the most discriminatory. Using smaller correlation value will create better discrimination (unsupervised clustering)
+
+```{r highCorrDesign}
+design = matrix(c(0,0.88,0.94,0.88,0,0.96,0.94,0.96,0), ncol = length(data), nrow = length(data), 
+                 dimnames = list(names(data), names(data)))
+design
+```
+
+Do the same for lower correlation for clustering
+```{r lowCorrDesign}
+design2 = matrix(0.1, ncol = length(data),  nrow = length(data), #length(data), 
+                dimnames = list(names(data), names(data)))
+diag(design2) = 0
+
+design2
+
+```
+
+
+```{r component no}
+set.seed(123) # for reproducibility
+sgccda.res = block.splsda(X = data, Y = Y, ncomp = 6, design = design)
+sgccda.res2 = block.splsda(X = data, Y = Y, ncomp = 6, design = design2)
+
+# this code takes a couple of min to run
+perf.diablo = perf(sgccda.res, validation = 'Mfold', folds = 3, nrepeat = 10) 
+perf.diablo2 = perf(sgccda.res2, validation = 'Mfold', folds = 3, nrepeat = 10)
+
+# #perf.diablo  # lists the different outputs
+# plot(perf.diablo) 
+# plot(perf.diablo2)
+# 
+# perf.diablo$choice.ncomp$WeightedVote
+# ncomp = perf.diablo$choice.ncomp$WeightedVote["Overall.BER", "centroids.dist"]
+```
+
+The perf.diablo above shows the error rate according to the number of components included in the analysis. Doesn't seem to alter much, so not v. descriptive. 
+
+```{r keepx}
+
+test.keepX_lots = list (mRNA = c(5:50), # 
+                   miRNA =c(5:50),
+                   sRNA = c(5:50))
+
+test.keepX_few = list (mRNA = c(5:9, seq(10,49,5)), # 
+                   miRNA =c(5:9, seq(10,49,5)),
+                   sRNA = c(5:9, seq(10,49,5)))
+
+
+# BPPARAM <- BiocParallel::MulticoreParam(workers = parallel::detectCores()-1) # DOESN'T WORK ON WINDOWS.
+BPPARAM <- BiocParallel::SnowParam(workers = parallel::detectCores()-1)
+
+# tune.TCGA_lots_lowCorr = tune.block.splsda(X = data, Y = Y, ncomp = 5, 
+#  takes a very long time
+#                              test.keepX = test.keepX_lots, design = design,
+#                              validation = 'Mfold', folds = 3, nrepeat = 1, 
+#                              BPPARAM = BPPARAM, 
+#                              dist = "centroids.dist")
+
+# tune.TCGA_lots_highCorr = tune.block.splsda(X = data, Y = Y, ncomp = 5, 
+                              # test.keepX = test.keepX_lots, design = design2,
+                              # validation = 'Mfold', folds = 3, nrepeat = 1, 
+                              # BPPARAM = BPPARAM, 
+                              # dist = "centroids.dist")
+
+tune.TCGA_few_lowCorr = tune.block.splsda(X = data, Y = Y, ncomp = 5, 
+                              test.keepX = test.keepX_few, design = design2,
+                              validation = 'Mfold', folds = 3, nrepeat = 1, # increasing nrepeat should improve confidence
+                              BPPARAM = BPPARAM, 
+                              dist = "centroids.dist")
+
+
+tune.TCGA_few_highCorr = tune.block.splsda(X = data, Y = Y, ncomp = 5, 
+                              test.keepX = test.keepX_few, design = design,
+                              validation = 'Mfold', folds = 3, nrepeat = 1, 
+                              BPPARAM = BPPARAM, 
+                              dist = "centroids.dist")
+```
+
+```{r keeps}
+# list.keepX_lots_lowCorr = tune.TCGA_lots_lowCorr$choice.keepX
+# list.keepX_lots_highCorr = tune.TCGA_lots_highCorr$choice.keepX
+list.keepX_few_lowCorr = tune.TCGA_few_lowCorr$choice.keepX
+list.keepX_few_highCorr = tune.TCGA_few_highCorr$choice.keepX
+#####
+# list.keepX_lots_lowCorr
+
+MyResult.diabloLC <- block.splsda(X=data, Y=Y, ncomp=6, keepX=list.keepX_few_lowCorr, design= design2)
+perf.diablo = perf(MyResult.diabloLC, validation = 'loo', BPPARAM=BPPARAM)
+plot(perf.diablo, col = color.mixo(5:7), sd = TRUE, legend.position = 'horizontal')
+#  
+
+MyResult.diabloHC <- block.splsda(X=data, Y=Y, ncomp=6, keepX=list.keepX_few_highCorr, design= design)
+perf.diablo = perf(MyResult.diabloHC, validation = 'loo', BPPARAM=BPPARAM)
+plot(perf.diablo, col = color.mixo(5:7), sd = TRUE, legend.position = 'horizontal')
+
+
+sgccda.resLC = block.splsda(X = data, Y = Y, ncomp = 5, 
+                          keepX = list.keepX_few_lowCorr, design = design2)
+# sgccda.resLC   # list the different functions of interest related to that object
+
+sgccda.resLC$design
+
+# mrna variables selected on component 1 ... 
+selectVar(sgccda.resLC, block = 'mRNA', comp = 1)$mRNA$name  
+selectVar(sgccda.resLC, block = 'miRNA', comp = 1)$miRNA$name
+selectVar(sgccda.resLC, block = 'sRNA', comp = 1)$sRNA$name 
+
+sgccda.resHC = block.splsda(X = data, Y = Y, ncomp = 5, 
+                          keepX = list.keepX_few_highCorr, design = design)
+# sgccda.resHC   # 
+sgccda.resHC$design
+
+# mrna variables selected on component 1 ... 
+selectVar(sgccda.resHC, block = 'mRNA', comp = 1)$mRNA$name  # 
+selectVar(sgccda.resHC, block = 'miRNA', comp = 1)$miRNA$name 
+selectVar(sgccda.resHC, block = 'sRNA', comp = 1)$sRNA$name 
+```
+
+Produce PCA plots of 
+```{r PCA}
+dateStr = Sys.Date()
+
+col = c('slategrey', 'darkorchid', 'cornflowerblue', 'black', 'firebrick4', 'turquoise4')
+
+pdLC = plotDiablo(sgccda.resLC, ncomp =1, col.per.group = col)
+pdHC = plotDiablo(sgccda.resHC, ncomp =1, col.per.group = col)
+# pd
+
+piLC = plotIndiv(sgccda.resLC, guide = FALSE, legend = TRUE, title = 'DIABLO', col.per.group = col) # 
+ggsave(here('output', "plotIndiv130821_lowCor.pdf"))
+
+piHC = plotIndiv(sgccda.resHC, guide = FALSE, legend = TRUE, title = 'DIABLO', col.per.group = col) # 
+ggsave(here('output', "plotIndiv130821_highCor.pdf"))
+
+
+paLC = plotArrow(sgccda.resLC, ind.names = TRUE , col.per.group = col, legend.title = 'Treatment', pch.size=3, title = 'DIABLO') # 
+paLC
+
+ggsave(here('output', paste0("plotArrows", dateStr, "_lowCor.pdf")))
+ggsave(here('output', paste0("plotArrows", dateStr, "_lowCor.png")))
+
+
+
+paHC = plotArrow(sgccda.resHC, ind.names = TRUE , col.per.group = col, legend.title = 'Treatment', pch.size=3, title = 'DIABLO') # 
+paHC
+
+
+ggsave(here('output', paste0("plotArrows", dateStr, "_highCor.pdf")))
+ggsave(here('output', paste0("plotArrows", dateStr, "_highCor.png")))
+```
+
+
+
+```{r variablePlots}
+cicLC<-plotVar(sgccda.resLC, var.names = FALSE, style = 'graphics', legend = TRUE,  # Fewer now
+        pch = c(16, 17, 15), cex = c(2,2,2), col = c('darkorchid', 'brown1', 'lightgreen'))
+cicHC<-plotVar(sgccda.resHC, var.names = FALSE, style = 'graphics', legend = TRUE,  # Fewer now
+        pch = c(16, 17, 15), cex = c(2,2,2), col = c('darkorchid', 'brown1', 'lightgreen'))
+```
+
+# Circos connections
+
+Show correlations among mRNA/miRNA/sRNA at 0.8 correlation threshold and get table output of correlations. These need to be run in the console on my version of Rstudio on Windows.
+
+```{r circos}
+
+cutoff = 0.8
+pdf(here('output', paste0("Circos", '_', cutoff, '_', dateStr, '_lowCor.pdf')))
+circosPlot(sgccda.resLC, cutoff = cutoff, line = TRUE, 
+           color.blocks= c('darkorchid', 'brown1', 'lightgreen'),
+           comp = 1:2,
+           color.cor = c("chocolate3","grey20"), size.labels = 1.5, color.Y = col) # variables=0.35, 
+dev.off()
+
+pdf(file=here('output', paste0("Circos", '_', cutoff, '_',  dateStr, '_highCor.pdf')))
+circosPlot(sgccda.resHC, cutoff = cutoff, line = TRUE, 
+           comp = 1:2,
+           color.blocks= c('darkorchid', 'brown1', 'lightgreen'),
+           color.cor = c("chocolate3","grey20"), size.labels = 1.5, color.Y = col)  
+dev.off()
+
+
+cLC = circosPlot(sgccda.resLC, cutoff = cutoff, line = TRUE, # works but hard to tell
+           comp = 1:2,
+           color.blocks= c('darkorchid', 'brown1', 'lightgreen'),
+           color.cor = c("chocolate3","grey20"), size.labels = 1.5, color.Y = col) # variables=0.35, 
+cHC = circosPlot(sgccda.resHC, cutoff = cutoff, line = TRUE, 
+           comp = 1:2,
+           color.blocks= c('darkorchid', 'brown1', 'lightgreen'),
+           color.cor = c("chocolate3","grey20"), size.labels = 1.5, color.Y = col) # variables=0.35, 
+
+
+write.csv(cLC, here('output',  paste0("Circos", cutoff dateStr, '_lowCor.csv')), row.names = TRUE)
+write.csv(cHC, here('output',  paste0("Circos", '_', cutoff, '_', dateStr,'_highCor.csv')), row.names = TRUE)
+
+```
+
+Save RData file up to now.
+
+```{r, save}
+# save .Rda file
+save(sgccda.resLC, file = here("output", paste0("sgccda.res_", dateStr, '_lowCor.Rda')))
+save(sgccda.resHC, file = here("output", paste0("sgccda.res_", dateStr, '_highCor.Rda')))
+# load(here("output", "sgccda.res_0.1Corr_largeRandom_130821.Rda"))
+```
+
+Create network plots. Purple circles are mRNA, red squares miRNA, greenish squares sRNA. Needs to be run in console on my windows version of Rstudio.
+
+```{r network}
+dev.off()
+
+pdf(here('output',paste0('networkPlot_', cutoff, '_', dateStr, '_lowCor.pdf')))
+network(sgccda.resLC, blocks = c(1,2,3), # doesnt work in rstudio. save as image w save and name.save
+        color.node = c('darkorchid', 'brown1', 'lightgreen'), 
+        shape.node = c('circle', 'rectangle', 'rectangle'),
+        cutoff = cutoff, show.color.key = TRUE, 
+        color.edge =  color.jet(100) #,
+        # interactive = TRUE
+        )
+legend('bottomright', legend=c('mRNA', 'miRNA', 'sRNA'), pch=(c(19,15,15)), col=c('darkorchid', 'brown1', 'lightgreen'),  y.intersp=1, x.intersp=1, xpd=TRUE, bty="n")#, x=0, y=-2.5)
+# note, size of dot is just linked to name length
+dev.off()
+
+pdf(here('output',paste0('networkPlot_', cutoff, '_', dateStr, '_highCor.pdf')))
+network(sgccda.resHC, blocks = c(1,2,3), # doesnt work in rstudio. save as image w save and name.save
+        color.node = c('darkorchid', 'brown1', 'lightgreen'), 
+        shape.node = c('circle', 'rectangle', 'rectangle'),
+        cutoff = 0.8, show.color.key = TRUE, 
+        color.edge =  color.jet(100) #,
+        # interactive = TRUE
+        )
+legend('bottomright', legend=c('mRNA', 'miRNA', 'sRNA'), pch=(c(19,15,15)), col=c('darkorchid', 'brown1', 'lightgreen'),  y.intersp=1, x.intersp=1, xpd=TRUE, bty="n")#, x=0, y=-2.5)
+# note, size of dot is just linked to name length
+dev.off()
+```
+The network can be saved in a .gml format to be input into the software Cytoscape, using the R package igraph
+
+```{r savenetw}
+# library(igraph)
+my.networkLC = network(sgccda.resLC, blocks = c(1,2,3),
+        color.node = c('darkorchid', 'brown1', 'lightgreen'), 
+        shape.node = c('circle', 'rectangle', 'rectangle'),
+        color.edge =  color.jet(100), #,
+        cutoff = cutoff)
+write.graph(my.networkLC$gR, file = here("output", paste0("myNetwork_", cutoff, '_', dateStr,"lowCor.gml")), format = "gml")
+
+my.networkHC = network(sgccda.resHC, blocks = c(1,2,3),
+        color.node = c('darkorchid', 'brown1', 'lightgreen'), 
+        shape.node = c('circle', 'rectangle', 'rectangle'),
+        color.edge =  color.jet(100), #,
+        cutoff = cutoff)
+write.graph(my.networkHC$gR, file = here("output", paste0("myNetwork_", cutoff, '_', dateStr, "highCor.gml")), format = "gml")
+
+```
+
+Save correlation matrix > cutoff value
+
+```{r networkgenes}
+# head(my.networkLC$M_mRNA_miRNA)
+# head(my.network$M_mRNA_sRNA)
+# head(my.network$M_miRNA_sRNA)
+
+write.table(my.networkLC$M_mRNA_miRNA, 
+            file=here('output', paste0("networkDF_mRNA_miRNA_lowCor_", cutoff, '_', dateStr, ".csv")),
+            sep=';',quote=FALSE, row.names=TRUE)
+write.table(my.networkLC$M_mRNA_sRNA, 
+            file=here('output', paste0("networkDF_mRNA_sRNA_lowCor_", cutoff, '_', dateStr, ".csv")),
+            sep=';',quote=FALSE, row.names=TRUE)
+write.table(my.networkLC$M_miRNA_sRNA, 
+            file=here('output', paste0("networkDF_miRNA_sRNA_lowCor_", cutoff, '_', dateStr, ".csv")),
+            sep=';',quote=FALSE, row.names=TRUE)
+
+write.table(my.networkHC$M_mRNA_miRNA, 
+            file=here('output', paste0("networkDF_mRNA_miRNA_highCor_", cutoff, '_', dateStr, ".csv")),
+            sep=';',quote=FALSE, row.names=TRUE)
+write.table(my.networkHC$M_mRNA_sRNA, 
+            file=here('output', paste0("networkDF_mRNA_sRNA_highCor_", cutoff, '_', dateStr, ".csv")),
+            sep=';',quote=FALSE, row.names=TRUE)
+write.table(my.networkHC$M_miRNA_sRNA, 
+            file=here('output', paste0("networkDF_miRNA_sRNA_highCor_", cutoff, '_', dateStr, ".csv")),
+            sep=';',quote=FALSE, row.names=TRUE)
+```
+
+```{r getLoadingPlot}
+dev.off()
+
+pdf(here('output', paste0('Loadings_lowCor_', cutoff, '_', dateStr, '.pdf')))
+plotLoadings(sgccda.resLC, comp = 1, contrib = 'max', method = 'median', legend.color = col, legend.title = "Treatment", width =10, height=12)
+plotLoadings(sgccda.resLC, comp = 2, contrib = 'max', method = 'median', legend.color = col, legend.title = "Treatment")
+dev.off()
+
+
+pdf(here('output', paste0('Loadings_highCor_', cutoff, '_', dateStr, '.pdf')))
+plotLoadings(sgccda.resHC, comp = 1, contrib = 'max', method = 'median', legend.color = col, legend.title = "Treatment")
+plotLoadings(sgccda.resHC, comp = 2, contrib = 'max', method = 'median', legend.color = col, legend.title = "Treatment")
+dev.off()
+
+
+
+loadints1LC=plotLoadings(sgccda.resLC, comp = 1, contrib = 'max', method = 'median', plot=FALSE)
+loadints2LC=plotLoadings(sgccda.resLC, comp = 2, contrib = 'max', method = 'median', plot=FALSE)
+
+loadints1HC=plotLoadings(sgccda.resHC, comp = 1, contrib = 'max', method = 'median', plot=FALSE)
+loadints2HC=plotLoadings(sgccda.resHC, comp = 2, contrib = 'max', method = 'median', plot=FALSE)
+```
+
+
+Produce heatmaps of genes and save the ouputs of gene matrices. To adjust plot dim to see all the genes, [install dev version of mixomics.](https://mixomics-users.discourse.group/t/cimdiablo-number-of-genes-on-the-x-axis/670/2) Likely will be fixed in future releases. The current version does produce the output tables that are in the order of
+`BiocManager::install('aljabadi/mixOmics@cimdiablo-plotdims')`
+
+`cimDiablo(sgccda.resLC, comp = c(1,2), save = "pdf", name.save="cimdiablo", save.width=12, save.height=8, margins = c(6, 15))`
+
+
+
+
+```{r heatmapMulti}
+
+
+pdf(here('output', paste0('heatmap_lowCor_', dateStr, '.pdf')))
+cimDiablo(sgccda.resLC, color.Y=col, legend.position='right', size.legend = 0.85, margins = c(12, 15))# ,lwid = c(0,0.2,5))
+dev.off()
+
+
+xLC=cimDiablo(sgccda.resLC, color.Y=col, legend.position='right', size.legend = 0.85, margins = c(12, 15))# ,lwid = c(0,0.2,5))
+
+save(xLC, file=here('output', paste0("heatmap_lowCor_", dateStr, ".Rda")))
+
+pdf(here('output', paste0('heatmap_highCor_', dateStr, '.pdf')))
+cimDiablo(sgccda.resHC, color.Y=col, legend.position='right', size.legend = 0.85, margins = c(12, 15))# ,lwid = c(0,0.2,5))
+dev.off()
+
+xHC=cimDiablo(sgccda.resHC, color.Y=col, legend.position='right', size.legend = 0.85, margins = c(12, 15))# ,lwid = c(0,0.2,5))
+
+save(xHC, file=here('output', paste0('heatmap_highCor_', dateStr, '.Rda')))
+```
+
+
+```{r saveworkspace}
+save.image(here('output', paste0("mixomicWorkspace_", dateStr, ".RData")))
+
+```
+

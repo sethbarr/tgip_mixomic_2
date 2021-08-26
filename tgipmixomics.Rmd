@@ -22,6 +22,12 @@ liftr:
 #  include: "DockerfileSnippet"
 ---
 
+To make dockerfile. Do not run unless you need to make a new docker image.
+```{r test liftr}
+# pacman::p_load("here", 'liftr')
+# input=paste0(here(), '/tgipmixomicsb.Rmd')
+# lift(input)
+```
 
 Based on [THIS TUTORIAL](http://mixomics.org/mixdiablo/case-study-tcga/) in Diablo.
 

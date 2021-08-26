@@ -11,3 +11,4 @@
 1629108026078:pacman::p_load("here", "tidyverse", 'ggplot2', 'mixOmics', 'edgeR')
 1629149194228:getwd9)
 1629149198600:getwd()
+1629941110324:clear()
